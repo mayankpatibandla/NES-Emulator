@@ -2,6 +2,7 @@
 #include <cstdint>
 #include <ios>
 #include <vector>
+#include <map>
 
 class Bus;
 
@@ -33,6 +34,16 @@ public:
 
 	void ConnectBus(Bus* n);
 
+	void clock();
+	void reset();
+	void irq();
+	void nmi();
+
+	bool complete();
+
+	std::map<uint16_t, std::string> disassemble(uint16_t nStart, uint16_t nStop);
+
+private:
 	// Addressing Modes
 	uint8_t IMP();	uint8_t IMM();
 	uint8_t ZP0();	uint8_t ZPX();
@@ -59,20 +70,15 @@ public:
 
 	uint8_t XXX();
 
-	void clock();
-	void reset();
-	void irq();
-	void nmi();
-
 	uint8_t fetch();
-	uint8_t fetched = 0;
 
+	uint8_t fetched = 0;
+	uint16_t temp = 0;
 	uint16_t addr_abs = 0;
 	uint16_t addr_rel = 0;
 	uint8_t opcode = 0;
 	uint8_t cycles = 0;
 
-private:
 	Bus* bus = nullptr;
 	uint8_t read(uint16_t addr);
 	void write(uint16_t addr, uint8_t data);
@@ -90,4 +96,3 @@ private:
 
 	std::vector<INSTRUCTION> lookup;
 };
-

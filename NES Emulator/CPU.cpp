@@ -1,5 +1,6 @@
 #include "CPU.h"
 #include "Bus.h"
+#include <format>
 
 CPU::CPU()
 {
@@ -25,12 +26,193 @@ CPU::CPU()
 }
 
 CPU::~CPU()
-{
-}
+= default;
 
 void CPU::ConnectBus(Bus* n)
 {
 	bus = n;
+}
+
+
+void CPU::clock()
+{
+	if (cycles == 0)
+	{
+		opcode = read(pc);
+		pc++;
+
+		cycles = lookup[opcode].cycles;
+
+		uint8_t additionalCycle1 = (this->*lookup[opcode].addrmode)();
+		uint8_t additionalCycle2 = (this->*lookup[opcode].operate)();
+
+		cycles += additionalCycle1 & additionalCycle2;
+	}
+
+	cycles--;
+}
+
+void CPU::reset()
+{
+	a = 0;
+	x = 0;
+	y = 0;
+	stkp = 0xFD;
+	status = 0x00 | U;
+
+	addr_abs = 0xFFFC;
+	uint16_t lo = read(addr_abs);
+	uint16_t hi = read(addr_abs + 1);
+
+	pc = (hi << 8) | lo;
+
+	addr_rel = 0;
+	addr_abs = 0;
+	fetched = 0;
+
+	cycles = 8;
+}
+
+void CPU::irq()
+{
+	if (!getFlag(I))
+	{
+		write(0x0100 + stkp--, (pc >> 8) & 0x00FF);
+		write(0x0100 + stkp--, pc & 0x00FF);
+
+		setFlag(B, false);
+		setFlag(U, true);
+		setFlag(I, true);
+		write(0x0100 + stkp--, status);
+
+		addr_abs = 0xFFFE;
+		uint16_t lo = read(addr_abs);
+		uint16_t hi = read(addr_abs + 1);
+
+		pc = (hi << 8) | lo;
+
+		cycles = 7;
+	}
+}
+
+void CPU::nmi()
+{
+	write(0x0100 + stkp--, (pc >> 8) & 0x00FF);
+	write(0x0100 + stkp--, pc & 0x00FF);
+
+	setFlag(B, false);
+	setFlag(U, true);
+	setFlag(I, true);
+	write(0x0100 + stkp--, status);
+
+	addr_abs = 0xFFFA;
+	uint16_t lo = read(addr_abs);
+	uint16_t hi = read(addr_abs + 1);
+
+	pc = (hi << 8) | lo;
+
+	cycles = 8;
+}
+
+bool CPU::complete()
+{
+	return cycles == 0;
+}
+
+std::map<uint16_t, std::string> CPU::disassemble(uint16_t nStart, uint16_t nStop)
+{
+	uint32_t addr = nStart;
+	uint16_t line_addr = 0;
+	uint8_t value = 0x00, lo = 0x00, hi = 0x00;
+	std::map<uint16_t, std::string> mapLines;
+
+	auto hex = [](uint32_t n, uint8_t d)
+		{
+			return std::format("{:0{}X}", n, d);
+		};
+
+	while (addr <= (uint32_t)nStop)
+	{
+		line_addr = addr;
+
+		std::string sInst = "$" + hex(addr, 4) + ": ";
+
+		uint8_t opcode = bus->read(addr++, true);
+		sInst += lookup[opcode].name + " ";
+
+		if (lookup[opcode].addrmode == &CPU::IMP)
+		{
+			sInst += " {IMP}";
+		}
+		else if (lookup[opcode].addrmode == &CPU::IMM)
+		{
+			value = bus->read(addr, true); addr++;
+			sInst += "#$" + hex(value, 2) + " {IMM}";
+		}
+		else if (lookup[opcode].addrmode == &CPU::ZP0)
+		{
+			lo = bus->read(addr, true); addr++;
+			hi = 0x00;
+			sInst += "$" + hex(lo, 2) + " {ZP0}";
+		}
+		else if (lookup[opcode].addrmode == &CPU::ZPX)
+		{
+			lo = bus->read(addr, true); addr++;
+			hi = 0x00;
+			sInst += "$" + hex(lo, 2) + ", X {ZPX}";
+		}
+		else if (lookup[opcode].addrmode == &CPU::ZPY)
+		{
+			lo = bus->read(addr, true); addr++;
+			hi = 0x00;
+			sInst += "$" + hex(lo, 2) + ", Y {ZPY}";
+		}
+		else if (lookup[opcode].addrmode == &CPU::IZX)
+		{
+			lo = bus->read(addr, true); addr++;
+			hi = 0x00;
+			sInst += "($" + hex(lo, 2) + ", X) {IZX}";
+		}
+		else if (lookup[opcode].addrmode == &CPU::IZY)
+		{
+			lo = bus->read(addr, true); addr++;
+			hi = 0x00;
+			sInst += "($" + hex(lo, 2) + "), Y {IZY}";
+		}
+		else if (lookup[opcode].addrmode == &CPU::ABS)
+		{
+			lo = bus->read(addr, true); addr++;
+			hi = bus->read(addr, true); addr++;
+			sInst += "$" + hex((uint16_t)(hi << 8) | lo, 4) + " {ABS}";
+		}
+		else if (lookup[opcode].addrmode == &CPU::ABX)
+		{
+			lo = bus->read(addr, true); addr++;
+			hi = bus->read(addr, true); addr++;
+			sInst += "$" + hex((uint16_t)(hi << 8) | lo, 4) + ", X {ABX}";
+		}
+		else if (lookup[opcode].addrmode == &CPU::ABY)
+		{
+			lo = bus->read(addr, true); addr++;
+			hi = bus->read(addr, true); addr++;
+			sInst += "$" + hex((uint16_t)(hi << 8) | lo, 4) + ", Y {ABY}";
+		}
+		else if (lookup[opcode].addrmode == &CPU::IND)
+		{
+			lo = bus->read(addr, true); addr++;
+			hi = bus->read(addr, true); addr++;
+			sInst += "($" + hex((uint16_t)(hi << 8) | lo, 4) + ") {IND}";
+		}
+		else if (lookup[opcode].addrmode == &CPU::REL)
+		{
+			value = bus->read(addr, true); addr++;
+			sInst += "$" + hex(value, 2) + " [$" + hex(addr + value, 4) + "] {REL}";
+		}
+
+		mapLines[line_addr] = sInst;
+	}
+
+	return mapLines;
 }
 
 // Addressing Modes
@@ -151,22 +333,656 @@ uint8_t CPU::IZY()
 	return (addr_abs & 0xFF00) != (hi << 8);
 }
 
-void CPU::clock()
+// Instructions
+
+uint8_t CPU::ADC()
 {
-	if (cycles == 0)
+	temp = (uint16_t)a + (uint16_t)fetch() + (uint16_t)getFlag(C);
+
+	setFlag(C, temp > 0x00FF);
+	setFlag(Z, (temp & 0x00FF) == 0x0000);
+	setFlag(V, (~((uint16_t)a ^ (uint16_t)fetched) & ((uint16_t)a ^ temp)) & 0x0080);
+	setFlag(N, temp & 0x0080);
+
+	a = temp & 0x00FF;
+
+	return 1;
+}
+
+uint8_t CPU::AND()
+{
+	a &= fetch();
+
+	setFlag(Z, a == 0x00);
+	setFlag(N, a & 0x80);
+
+	return 1;
+}
+
+uint8_t CPU::ASL()
+{
+	temp = (uint16_t)fetch() << 1;
+
+	setFlag(C, (temp & 0xFF00) > 0);
+	setFlag(Z, (temp & 0x00FF) == 0x00);
+	setFlag(N, temp & 0x80);
+
+	if (lookup[opcode].addrmode == &CPU::IMP)
 	{
-		opcode = read(pc);
-		pc++;
-
-		cycles = lookup[opcode].cycles;
-
-		uint8_t additionalCycle1 = this->*lookup[opcode].addrmode();
-		uint8_t additionalCycle2 = this->*lookup[opcode].operate();
-
-		cycles += additionalCycle1 & additionalCycle2;
+		a = temp & 0x00FF;
+	}
+	else
+	{
+		write(addr_abs, temp & 0x00FF);
 	}
 
-	cycles--;
+	return 0;
+}
+
+uint8_t CPU::BCC()
+{
+	if (!getFlag(C))
+	{
+		cycles++;
+		addr_abs = pc + addr_rel;
+
+		if ((addr_abs & 0xFF00) != (pc & 0xFF00))
+		{
+			cycles++;
+		}
+
+		pc = addr_abs;
+	}
+
+	return 0;
+}
+
+uint8_t CPU::BCS()
+{
+	if (getFlag(C))
+	{
+		cycles++;
+		addr_abs = pc + addr_rel;
+
+		if ((addr_abs & 0xFF00) != (pc & 0xFF00))
+		{
+			cycles++;
+		}
+
+		pc = addr_abs;
+	}
+
+	return 0;
+}
+
+uint8_t CPU::BEQ()
+{
+	if (getFlag(Z))
+	{
+		cycles++;
+		addr_abs = pc + addr_rel;
+
+		if ((addr_abs & 0xFF00) != (pc & 0xFF00))
+		{
+			cycles++;
+		}
+
+		pc = addr_abs;
+	}
+
+	return 0;
+}
+
+uint8_t CPU::BIT()
+{
+	temp = a & fetch();
+
+	setFlag(Z, (temp & 0x00FF) == 0x00);
+	setFlag(N, fetched & (1 << 7));
+	setFlag(V, fetched & (1 << 6));
+
+	return 0;
+}
+
+uint8_t CPU::BMI()
+{
+	if (getFlag(N))
+	{
+		cycles++;
+		addr_abs = pc + addr_rel;
+
+		if ((addr_abs & 0xFF00) != (pc & 0xFF00))
+		{
+			cycles++;
+		}
+
+		pc = addr_abs;
+	}
+
+	return 0;
+}
+
+uint8_t CPU::BNE()
+{
+	if (!getFlag(Z))
+	{
+		cycles++;
+		addr_abs = pc + addr_rel;
+
+		if ((addr_abs & 0xFF00) != (pc & 0xFF00))
+		{
+			cycles++;
+		}
+
+		pc = addr_abs;
+	}
+
+	return 0;
+}
+
+uint8_t CPU::BPL()
+{
+	if (!getFlag(N))
+	{
+		cycles++;
+		addr_abs = pc + addr_rel;
+
+		if ((addr_abs & 0xFF00) != (pc & 0xFF00))
+		{
+			cycles++;
+		}
+
+		pc = addr_abs;
+	}
+
+	return 0;
+}
+
+uint8_t CPU::BRK()
+{
+	setFlag(I, true);
+	write(0x0100 + stkp--, (++pc >> 8) & 0x00FF);
+	write(0x0100 + stkp--, pc & 0x00FF);
+
+	setFlag(B, true);
+	write(0x0100 + stkp--, status);
+	setFlag(B, false);
+
+	pc = (uint16_t)read(0xFFFE) | ((uint16_t)read(0xFFFF) << 8);
+
+	return 0;
+}
+
+uint8_t CPU::BVC()
+{
+	if (!getFlag(V))
+	{
+		cycles++;
+		addr_abs = pc + addr_rel;
+
+		if ((addr_abs & 0xFF00) != (pc & 0xFF00))
+		{
+			cycles++;
+		}
+
+		pc = addr_abs;
+	}
+
+	return 0;
+}
+
+uint8_t CPU::BVS()
+{
+	if (getFlag(V))
+	{
+		cycles++;
+		addr_abs = pc + addr_rel;
+
+		if ((addr_abs & 0xFF00) != (pc & 0xFF00))
+		{
+			cycles++;
+		}
+
+		pc = addr_abs;
+	}
+
+	return 0;
+}
+
+uint8_t CPU::CLC()
+{
+	setFlag(C, false);
+	return 0;
+}
+
+uint8_t CPU::CLD()
+{
+	setFlag(D, false);
+	return 0;
+}
+
+uint8_t CPU::CLI()
+{
+	setFlag(I, false);
+	return 0;
+}
+
+uint8_t CPU::CLV()
+{
+	setFlag(V, false);
+	return 0;
+}
+
+uint8_t CPU::CMP()
+{
+	temp = (uint16_t)a - (uint16_t)fetch();
+
+	setFlag(C, a >= fetched);
+	setFlag(Z, (temp & 0x00FF) == 0x0000);
+	setFlag(N, temp & 0x0080);
+
+	return 1;
+}
+
+uint8_t CPU::CPX()
+{
+	temp = (uint16_t)x - (uint16_t)fetch();
+
+	setFlag(C, x >= fetched);
+	setFlag(Z, (temp & 0x00FF) == 0x0000);
+	setFlag(N, temp & 0x0080);
+
+	return 0;
+}
+
+uint8_t CPU::CPY()
+{
+	temp = (uint16_t)y - (uint16_t)fetch();
+
+	setFlag(C, y >= fetched);
+	setFlag(Z, (temp & 0x00FF) == 0x0000);
+	setFlag(N, temp & 0x0080);
+
+	return 0;
+}
+
+uint8_t CPU::DEC()
+{
+	temp = fetch() - 1;
+	write(addr_abs, temp & 0x00FF);
+
+	setFlag(Z, (temp & 0x00FF) == 0x0000);
+	setFlag(N, temp & 0x0080);
+
+	return 0;
+}
+
+uint8_t CPU::DEX()
+{
+	x--;
+
+	setFlag(Z, x == 0x00);
+	setFlag(N, x & 0x80);
+
+	return 0;
+}
+
+uint8_t CPU::DEY()
+{
+	y--;
+
+	setFlag(Z, y == 0x00);
+	setFlag(N, y & 0x80);
+
+	return 0;
+}
+
+uint8_t CPU::EOR()
+{
+	a ^= fetch();
+
+	setFlag(Z, a == 0x00);
+	setFlag(N, a & 0x80);
+
+	return 1;
+}
+
+uint8_t CPU::INC()
+{
+	temp = fetch() + 1;
+	write(addr_abs, temp & 0x00FF);
+
+	setFlag(Z, (temp & 0x00FF) == 0x0000);
+	setFlag(N, temp & 0x0080);
+
+	return 0;
+}
+
+uint8_t CPU::INX()
+{
+	x++;
+
+	setFlag(Z, x == 0x00);
+	setFlag(N, x & 0x80);
+
+	return 0;
+}
+
+uint8_t CPU::INY()
+{
+	y++;
+
+	setFlag(Z, y == 0x00);
+	setFlag(N, y & 0x80);
+
+	return 0;
+}
+
+uint8_t CPU::JMP()
+{
+	pc = addr_abs;
+	return 0;
+}
+
+uint8_t CPU::JSR()
+{
+	write(0x0100 + stkp--, (--pc >> 8) & 0x00FF);
+	write(0x0100 + stkp--, pc & 0x00FF);
+
+	pc = addr_abs;
+
+	return 0;
+}
+
+uint8_t CPU::LDA()
+{
+	a = fetch();
+
+	setFlag(Z, a == 0x00);
+	setFlag(N, a & 0x80);
+
+	return 1;
+}
+
+uint8_t CPU::LDX()
+{
+	x = fetch();
+
+	setFlag(Z, x == 0x00);
+	setFlag(N, x & 0x80);
+
+	return 1;
+}
+
+uint8_t CPU::LDY()
+{
+	y = fetch();
+
+	setFlag(Z, y == 0x00);
+	setFlag(N, y & 0x80);
+
+	return 1;
+}
+
+uint8_t CPU::LSR()
+{
+	setFlag(C, fetch() & 0x0001);
+	temp = fetched >> 1;
+	setFlag(Z, (temp & 0x00FF) == 0x0000);
+	setFlag(N, temp & 0x0080);
+
+	if (lookup[opcode].addrmode == &CPU::IMP)
+	{
+		a = temp & 0x00FF;
+	}
+	else
+	{
+		write(addr_abs, temp & 0x00FF);
+	}
+
+	return 0;
+}
+
+uint8_t CPU::NOP()
+{
+	switch (opcode)
+	{
+	case 0x1C:
+	case 0x3C:
+	case 0x5C:
+	case 0x7C:
+	case 0xDC:
+	case 0xFC:
+		return 1;
+	default:
+		return 0;
+	}
+}
+
+uint8_t CPU::ORA()
+{
+	a |= fetch();
+
+	setFlag(Z, a == 0x00);
+	setFlag(N, a & 0x80);
+
+	return 1;
+}
+
+uint8_t CPU::PHA()
+{
+	write(0x0100 + stkp--, a);
+	return 0;
+}
+
+uint8_t CPU::PHP()
+{
+	write(0x0100 + stkp--, status | B | U);
+
+	setFlag(B, false);
+	setFlag(U, false);
+
+	return 0;
+}
+
+uint8_t CPU::PLA()
+{
+	a = read(0x0100 + ++stkp);
+
+	setFlag(Z, a == 0x00);
+	setFlag(N, a & 0x80);
+
+	return 0;
+}
+
+uint8_t CPU::PLP()
+{
+	status = read(0x0100 + ++stkp);
+	setFlag(U, true);
+	return 0;
+}
+
+uint8_t CPU::ROL()
+{
+	temp = (uint16_t)(fetch() << 1) | getFlag(C);
+
+	setFlag(C, temp & 0xFF00);
+	setFlag(Z, (temp & 0x00FF) == 0x0000);
+	setFlag(N, temp & 0x0080);
+
+	if (lookup[opcode].addrmode == &CPU::IMP)
+	{
+		a = temp & 0x00FF;
+	}
+	else
+	{
+		write(addr_abs, temp & 0x00FF);
+	}
+
+	return 0;
+}
+
+uint8_t CPU::ROR()
+{
+	temp = (uint16_t)(getFlag(C) << 7) | (fetch() >> 1);
+
+	setFlag(C, fetched & 0x01);
+	setFlag(Z, (temp & 0x00FF) == 0x00);
+	setFlag(N, temp & 0x0080);
+
+	if (lookup[opcode].addrmode == &CPU::IMP)
+	{
+		a = temp & 0x00FF;
+	}
+	else
+	{
+		write(addr_abs, temp & 0x00FF);
+	}
+
+	return 0;
+}
+
+uint8_t CPU::RTI()
+{
+	status = read(0x0100 + ++stkp);
+	status &= ~B;
+	status &= ~U;
+
+	pc = (uint16_t)read(0x0100 + ++stkp);
+	pc |= (uint16_t)read(0x0100 + ++stkp) << 8;
+
+	return 0;
+}
+
+uint8_t CPU::RTS()
+{
+	pc = (uint16_t)read(0x0100 + ++stkp);
+	pc |= (uint16_t)read(0x0100 + ++stkp) << 8;
+	pc++;
+
+	return 0;
+}
+
+uint8_t CPU::SBC()
+{
+	uint16_t value = (uint16_t)fetch() ^ 0x00FF;
+
+	temp = (uint16_t)a + value + (uint16_t)getFlag(C);
+
+	setFlag(C, temp & 0xFF00);
+	setFlag(Z, (temp & 0x00FF) == 0);
+	setFlag(V, (temp ^ (uint16_t)a) & (temp ^ value) & 0x0080);
+	setFlag(N, temp & 0x0080);
+
+	a = temp & 0x00FF;
+
+	return 1;
+}
+
+uint8_t CPU::SEC()
+{
+	setFlag(C, true);
+	return 0;
+}
+
+uint8_t CPU::SED()
+{
+	setFlag(D, true);
+	return 0;
+}
+
+uint8_t CPU::SEI()
+{
+	setFlag(I, true);
+	return 0;
+}
+
+uint8_t CPU::STA()
+{
+	write(addr_abs, a);
+	return 0;
+}
+
+uint8_t CPU::STX()
+{
+	write(addr_abs, x);
+	return 0;
+}
+
+uint8_t CPU::STY()
+{
+	write(addr_abs, y);
+	return 0;
+}
+
+uint8_t CPU::TAX()
+{
+	x = a;
+
+	setFlag(Z, x == 0x00);
+	setFlag(N, x & 0x80);
+
+	return 0;
+}
+
+uint8_t CPU::TAY()
+{
+	y = a;
+
+	setFlag(Z, y == 0x00);
+	setFlag(N, y & 0x80);
+
+	return 0;
+}
+
+uint8_t CPU::TSX()
+{
+	x = stkp;
+
+	setFlag(Z, x == 0x00);
+	setFlag(N, x & 0x80);
+
+	return 0;
+}
+
+uint8_t CPU::TXA()
+{
+	a = x;
+
+	setFlag(Z, a == 0x00);
+	setFlag(N, a & 0x80);
+
+	return 0;
+}
+
+uint8_t CPU::TXS()
+{
+	stkp = x;
+	return 0;
+}
+
+uint8_t CPU::TYA()
+{
+	a = y;
+
+	setFlag(Z, a == 0x00);
+	setFlag(N, a & 0x80);
+
+	return 0;
+}
+
+uint8_t CPU::XXX()
+{
+	return 0;
+}
+
+uint8_t CPU::fetch()
+{
+	if (lookup[opcode].addrmode != &CPU::IMP)
+	{
+		fetched = read(addr_abs);
+	}
+	return fetched;
 }
 
 uint8_t CPU::read(uint16_t addr)
@@ -181,8 +997,17 @@ void CPU::write(uint16_t addr, uint8_t data)
 
 uint8_t CPU::getFlag(FLAGS f)
 {
+	return (status & f) > 0;
 }
 
 void CPU::setFlag(FLAGS f, bool v)
 {
+	if (v)
+	{
+		status |= f;
+	}
+	else
+	{
+		status &= ~f;
+	}
 }
