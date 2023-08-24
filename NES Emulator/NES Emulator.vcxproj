@@ -130,6 +130,7 @@
   <ItemGroup>
     <ClInclude Include="Bus.h" />
     <ClInclude Include="CPU.h" />
+    <ClInclude Include="PixelGameEngine.h" />
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="Bus.cpp" />
